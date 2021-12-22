@@ -16,6 +16,7 @@
 
 
 import argparse
+from math import exp
 from pathlib import Path
 
 import torch
@@ -170,6 +171,9 @@ def convert_tr_ocr_checkpoint(checkpoint_url, pytorch_dump_folder_path):
         decoder_config.num_hidden_layers = 6
         decoder_config.num_attention_heads = 8
         decoder_config.decoder_ffn_dim = 1024
+        decoder_config.tie_word_embeddings = False
+        decoder_config.scale_embedding = True
+        decoder_config.activation_function = "relu"
     else:
         raise ValueError("Should either find 'base' or 'large' or 'small' in checkpoint URL")
 
@@ -181,7 +185,7 @@ def convert_tr_ocr_checkpoint(checkpoint_url, pytorch_dump_folder_path):
         decoder_config.max_position_embeddings = 1024
         decoder_config.scale_embedding = True
         decoder_config.use_learned_position_embeddings = False
-        decoder_config.layernorm_embedding = False
+        decoder_config.layernorm_embedding = False        
 
     # load HuggingFace model
     if "small" in checkpoint_url:
@@ -217,14 +221,14 @@ def convert_tr_ocr_checkpoint(checkpoint_url, pytorch_dump_folder_path):
             state_dict[key] = val
 
     # load state dict
+    model.load_state_dict(state_dict)  # 神奇的是decoder.output_projection.weight在load的时候会覆盖掉decoder.model.decoder.embed_tokens.weight的值
+    # model.state_dict()['decoder.model.decoder.embed_tokens.weight'].copy_(state_dict['decoder.model.decoder.embed_tokens.weight'])
+    # model.state_dict()['decoder.output_projection.weight'].copy_(state_dict['decoder.output_projection.weight'])
 
-    # model.state_dict()['decoder.model.decoder.embed_tokens.weight'][0, 0]
-    # tensor(0.0165)
-    # state_dict['decoder.model.decoder.embed_tokens.weight'][0, 0]
-    # tensor(0.0306)
-    model.load_state_dict(state_dict)
-    # model.state_dict()['decoder.model.decoder.embed_tokens.weight'][0, 0]
-    # tensor(-0.1218)
+    # double check
+    for key in model.state_dict():
+        assert model.state_dict()[key].shape == state_dict[key].shape, key + " shape mismatch"
+        assert torch.allclose(model.state_dict()[key], state_dict[key]), key + " value mismatch"
 
     # Check outputs on an image
     if "small" in checkpoint_url:
@@ -247,7 +251,19 @@ def convert_tr_ocr_checkpoint(checkpoint_url, pytorch_dump_folder_path):
     logits = outputs.logits
 
     if "small" in checkpoint_url:
-        excepted_shape = torch.Size([1, 1, 64044])
+        expected_shape = torch.Size([1, 1, 64044])
+        if "trocr-small-handwritten" in checkpoint_url:
+            expected_slice = torch.tensor(
+                [-5.1575, -4.8786,  4.4805,  4.0093,  5.9993,  7.6883,  8.6437, 11.3955, 16.2947,  7.3855]
+            )
+        elif "trocr-small-printed" in checkpoint_url:
+            expected_slice = torch.tensor(
+                [-6.6595, -7.1750,  4.7468, -6.0797,  3.7086, -1.6098, -3.5780,  2.2483, 1.7086,  2.6549]
+            )
+        elif "trocr-small-stage1" in checkpoint_url:
+            expected_slice = torch.tensor(
+                [-8.7469, -8.4940,  2.6503, -2.7512,  4.8163,  1.9893,  1.3361,  4.2446, 3.6917,  3.7275]
+            )
     else:
         expected_shape = torch.Size([1, 1, 50265])
         if "trocr-base-handwritten" in checkpoint_url:
@@ -288,7 +304,7 @@ if __name__ == "__main__":
         help="URL to the original PyTorch checkpoint (.pth file).",
     )
     parser.add_argument(
-        "--pytorch_dump_folder_path", default=None, type=str, help="Path to the folder to output PyTorch model."
+        "--pytorch_dump_folder_path", default='./', type=str, help="Path to the folder to output PyTorch model."
     )
     args = parser.parse_args()
 
