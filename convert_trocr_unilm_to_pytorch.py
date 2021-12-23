@@ -32,10 +32,12 @@ from transformers import (
     ViTConfig,
     ViTFeatureExtractor,
     ViTModel,
+    DeiTConfig,
     DeiTModel,
     DeiTFeatureExtractor,
     XLMRobertaTokenizer
 )
+from transformers.models.deit.configuration_deit import DeiTConfig
 from transformers.utils import logging
 from fairseq import file_utils
 
@@ -145,7 +147,10 @@ def convert_tr_ocr_checkpoint(checkpoint_url, pytorch_dump_folder_path):
     Copy/paste/tweak model's weights to our VisionEncoderDecoderModel structure.
     """
     # define encoder and decoder configs based on checkpoint_url
-    encoder_config = ViTConfig(image_size=384, qkv_bias="small" in checkpoint_url)
+    if "small" in checkpoint_url:
+        encoder_config = DeiTConfig(image_size=384, qkv_bias=True)
+    else:
+        encoder_config = ViTConfig(image_size=384, qkv_bias=False)
     decoder_config = TrOCRConfig()
 
     # size of the architecture
@@ -283,15 +288,21 @@ def convert_tr_ocr_checkpoint(checkpoint_url, pytorch_dump_folder_path):
                 [-6.0162, -7.0959, 4.4155, -5.1063, 7.0468, -3.1631, 2.6466, -0.3081, -0.8106, -1.7535]
             )
 
-    if "stage1" not in checkpoint_url:
+    # check all small models
+    if "small" in checkpoint_url or "stage1" not in checkpoint_url:
         assert logits.shape == expected_shape, "Shape of logits not as expected"
         assert torch.allclose(logits[0, 0, :10], expected_slice, atol=1e-3), "First elements of logits not as expected"
+
+    # fix some issue
+    model.config.eos_token_id = 2
 
     Path(pytorch_dump_folder_path).mkdir(exist_ok=True)
     print(f"Saving model to {pytorch_dump_folder_path}")
     model.save_pretrained(pytorch_dump_folder_path)
     print(f"Saving processor to {pytorch_dump_folder_path}")
     processor.save_pretrained(pytorch_dump_folder_path)
+    print(f"Saving tokenizer to {pytorch_dump_folder_path}")
+    tokenizer.save_pretrained(pytorch_dump_folder_path)
 
 
 if __name__ == "__main__":
@@ -308,5 +319,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    args.checkpoint_url = 'https://layoutlm.blob.core.windows.net/trocr/model_zoo/fairseq/trocr-small-handwritten.pt'
-    convert_tr_ocr_checkpoint(args.checkpoint_url, args.pytorch_dump_folder_path)
+    for suffix in ['handwritten', 'printed', 'stage1']:
+        args.checkpoint_url = 'https://layoutlm.blob.core.windows.net/trocr/model_zoo/fairseq/trocr-small-{}.pt'.format(suffix)
+        args.pytorch_dump_folder_path = './trocr-small-{}'.format(suffix)
+        convert_tr_ocr_checkpoint(args.checkpoint_url, args.pytorch_dump_folder_path)
